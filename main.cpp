@@ -184,11 +184,12 @@ void clearline() {
 // Render the screen
 void scrrend() {
 	if (toprend > y) {
-		toprend = y;
+		toprend = y; // Adjust toprend if the cursor is above the visible area
 	}
-	else if (toprend + h - 1 < y) {
-		toprend = y - (h - 1);
+	else if (toprend + h - 2 < y) {
+		toprend = y - (h - 2); // Adjust toprend if the cursor is below the visible area
 	}
+
 	for (unsigned short i = 0; i < h - 1; ++i) {
 		move(i, 0);
 		clearline();
@@ -200,7 +201,9 @@ void scrrend() {
 			printw(text[i + toprend].c_str());
 		}
 	}
-	move(y - toprend, x); // Move the cursor to the correct position
+
+	// Move the cursor to the correct position
+	move(y - toprend, x);
 }
 
 // Save the current text to a file
