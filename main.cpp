@@ -1,243 +1,519 @@
+// INCLUDES
+//{{{
 #include <ncurses.h>
 #include <vector>
 #include <string>
 #include <fstream>
+#include <stdlib.h>
+#include <unistd.h>
+#include <functional>
+#include <map>
+#include <sstream>
+//}}}
 
+// CONST VARIABLES
+//{{{
 const unsigned short TAB_SIZE = 4;
-
-unsigned x = 0, y = 0, toprend = 0;
-std::vector<std::string> text;
 unsigned short h, w;
+//}}}
+
+// FUNCTIONS
+//{{{
+inline void insert();
+inline void handle_command(std::string command);
+inline void command();
+inline void moveLeft();
+inline void moveDown();
+inline void moveUp();
+inline void moveRight();
+inline void clearline();
+inline void scrrend();
+inline void saveF(std::string file);
+inline void loadF(std::string file);
+inline void insertBefore();
+inline void insertAfter();
+//}}}
+
+// STRUCTS
+//{{{
+
+//buffer
+//{{{
+class buffer {
+public:
+	std::string name;
+	std::vector <std::string> content;
+	std::string path;
+	unsigned x = 0, y = 0, toprend = 0;
+	buffer() {
+		this -> name = "";
+		this -> content = {""};
+	}
+	buffer(std::string title, std::vector <std::string> cont) {
+		this -> name = title;
+		for (auto& line : cont) {
+			this -> content.push_back(line);
+		}
+	}
+};
+//}}}
+
+// register
+//{{{
+struct reg {
+	std::vector<std::string> content;
+	void copy(buffer& copyfrom, unsigned startL, unsigned endL) {
+		content.clear();
+		for (; startL <= endL; ++startL) {
+			content.push_back(copyfrom.content[startL]); // Access content of buffer
+		}
+	}
+	void paste(buffer& pasteTo) {
+		for (const auto& line : content) {
+			pasteTo.content.insert(pasteTo.content.begin() + pasteTo.y, line);
+			pasteTo.y++;
+		}
+	}
+};
+//}}}
+
+// keybind
+//{{{
+class keybind {
+public:
+	using CommandFunction = std::function<void()>;
+
+	void bind(const std::string& keySequence, CommandFunction command) {
+		bindings[keySequence] = command;
+	}
+
+	bool execute(const std::string& keySequence) {
+		auto it = bindings.find(keySequence);
+		if (it != bindings.end()) {
+			it -> second();
+			return true;
+		}
+		return false;
+	}
+
+	void loadBindingsFromFile(const std::string& filename) {
+		std::ifstream file(filename);
+		if (!file.is_open()) {
+			move(h - 1, 0);
+			printw("Bind file not found");
+			return;
+		}
+
+		std::string line;
+		while (std::getline(file, line)) {
+			parseLine(line);
+		}
+		file.close();
+	}
+
+	void bindDefaultActions() {
+		bind("h", moveLeft);
+		bind("j", moveDown);
+		bind("k", moveUp);
+		bind("l", moveRight);
+		bind(":", command);
+		bind("i", insertBefore);
+		bind("a", insertAfter);
+	}
+
+private:
+	std::map<std::string, CommandFunction> bindings;
+
+	void parseLine(const std::string& line) {
+		std::istringstream iss(line);
+		std::string command, keySequence;
+
+		if (iss >> command && command == "bind") {
+			std::getline(iss, keySequence, '"');
+			std::getline(iss, keySequence, '"');
+			std::string funcCall;
+			std::getline(iss, funcCall);
+
+			funcCall.erase(0, funcCall.find_first_not_of(" \t"));
+
+			if (funcCall.back() == ')') {
+				bind(keySequence, [funcCall]() {
+				});
+			}
+			else {
+				bind(keySequence, [funcCall]() {
+				});
+			}
+		}
+	}
+};
+//}}}
+
+//}}}
+
+// GLOBAL VARIABLES
+//{{{
+std::vector<buffer> buffers;
+reg registers[26]; // from a to z
+reg clipboard;
+int cb = 0; // current buffer index
 chtype c;
+std::string keyseq;
+//}}}
 
-void clearline();
-void scrrend();
-void saveF(std::string file);
-void loadF(std::string file);
-
+// MAIN
+//{{{
 int main() {
 	initscr();
 	cbreak();
 	noecho();
-	keypad(stdscr, TRUE); // Enable special keys (like arrow keys)
+	keypad(stdscr, TRUE);
 	getmaxyx(stdscr, h, w);
 	
-	// Initialize the first line of text
-	text.push_back("");
-
+	buffers.push_back(buffer("0", {""}));
+	keybind kb;
+	kb.bindDefaultActions();
+	kb.loadBindingsFromFile("bind");
 	while (1) {
-		scrrend(); // Render the screen before getting input
-
+		scrrend();
 		c = getch();
-		
-		if (c == 27) { // Command mode (ESC key)
-			move(h - 1, 0);
-			clearline();
-			move(h - 1, 0);
-			addch(':');
-			std::string command = "";
-			unsigned short cx = 1;
-			while (1) {
-				c = getch();
-				if (c == '\n') {
-					//move(h - 1, 0);
-					//clearline();
-					move(y - toprend, x);
-					break;
-				}
-				else if (c == 27) { // Exit command mode
-					move(h - 1, 0);
-					clearline();
-					move(y - toprend, x);
-					command.clear();
-					break;
-				}
-				else if (c == KEY_BACKSPACE) { // Backspace
-					if (cx > 1) {
-						move(h - 1, --cx);
-						addch(' ');
-						move(h - 1, cx);
-						command.pop_back();
-					}
-					else {
-						move(h - 1, 0);
-						clearline();
-						break;
-					}
-				}
-				else if (31 < c && c < 127) { // Printable characters
-					command.push_back(c);
-					if (cx < w) {
-						addch(c);
-					}
-					cx++;
-				}
-			}
-			// Command handling
-			if (command == "q") {
-				endwin();
-				return 0;
-			}
-			else if (command[0] == 'w') {
-				if (command.size() > 2) {
-					saveF(command.substr(2));
-				}
-			}
-			else if (command[0] == 'e') {
-				if (command.size() > 2) {
-					loadF(command.substr(2));
-				}
-			}
-		}
-		else if (c == '\n') { // New line
-			if (x == text[y].size()) {
-				text.insert(text.begin() + y + 1, ""); // Insert a new line
-			}
-			else {
-				std::string s = text[y].substr(x);
-				text[y].erase(x); // Remove the rest of the line
-				text.insert(text.begin() + y + 1, s); // Insert the rest into a new line
-			}
-			y++; // Move to the next line
-			x = 0; // Reset x to the beginning of the new line
-		}
-		else if (c == KEY_BACKSPACE) { // Backspace
-			if (x > 0) {
-				x--; // Move cursor left first
-				text[y].erase(x, 1); // Remove the character at the new cursor position
-			}
-			else if (y > 0) {
-				x = text[y - 1].size(); // Set cursor to the end of the previous line
-				// Combine current line with the previous line
-				text[y - 1] += text[y]; // Append current line to the previous line
-				text.erase(text.begin() + y); // Remove the current line
-				y--; // Move to the previous line
-			}
-		}
-		else if (31 < c && c < 127) { // Printable characters
-			if (x < text[y].size()) {
-				text[y].insert(x, 1, c); // Insert character at position x
-			}
-			else {
-				text[y].push_back(c); // Append character at the end
-			}
-			x++; // Move cursor right
-		}
-		else if (c == '\t') { // Handle tab key
-			// Insert spaces for the tab
-			for (int i = 0; i < TAB_SIZE; ++i) {
-				if (x < text[y].size()) {
-					text[y].insert(x, 1, ' '); // Insert space at position x
-				} else {
-					text[y].push_back(' '); // Append space at the end
-				}
-				x++; // Move cursor right
-			}
-		}
-		else if (c == KEY_LEFT) { // Move cursor left
-			if (x > 0) {
-				x--;
-			}
-			else if (y > 0) { // Move to the end of the previous line
-				y--;
-				x = text[y].size();
-			}
-		}
-		else if (c == KEY_RIGHT) { // Move cursor right
-			if (x < text[y].size()) {
-				x++;
-			}
-			else if (y < text.size() - 1) { // Move to the beginning of the next line
-				y++;
-				x = 0;
-			}
-		}
-		else if (c == KEY_UP) { // Move cursor up
-			if (y > 0) {
-				y--;
-				if (x > text[y].size()) {
-					x = text[y].size(); // Adjust x if it exceeds the new line length
-				}
-			}
-		}
-		else if (c == KEY_DOWN) { // Move cursor down
-			if (y < text.size() - 1) {
-				y++;
-				if (x > text[y].size()) {
-					x = text[y].size(); // Adjust x if it exceeds the new line length
-				}
-			}
+		keyseq.push_back(c);
+		if (kb.execute(keyseq) || 
+			keyseq.size() > 1 && kb.execute(keyseq.substr(1)) || 
+			keyseq.size() > 2 && kb.execute(keyseq.substr(2)) || 
+			keyseq.size() == 3) {
+			keyseq.clear();
 		}
 	}
 	scrrend();
-	endwin(); // End ncurses mode
+	endwin();
 	return 1;
 }
+//}}}
 
 // Clear the current line
-void clearline() {
+//{{{
+inline void clearline() {
 	for (unsigned short i = 0; i < w; ++i) {
 		addch(' ');
 	}
 }
+//}}}
 
 // Render the screen
-void scrrend() {
-	if (toprend > y) {
-		toprend = y; // Adjust toprend if the cursor is above the visible area
+//{{{
+inline void scrrend() {
+	if (buffers[cb].toprend > buffers[cb].y) {
+		buffers[cb].toprend = buffers[cb].y;
 	}
-	else if (toprend + h - 2 < y) {
-		toprend = y - (h - 2); // Adjust toprend if the cursor is below the visible area
+	else if (buffers[cb].toprend + h - 2 < buffers[cb].y) {
+		buffers[cb].toprend = buffers[cb].y - (h - 2); // Adjust toprend if the cursor is below the visible area
 	}
 
 	for (unsigned short i = 0; i < h - 1; ++i) {
 		move(i, 0);
 		clearline();
 		move(i, 0);
-		if (i + toprend >= text.size()) {
+		if (i + buffers[cb].toprend >= buffers[cb].content.size()) {
 			addch('~'); // Indicate empty lines
 		}
 		else {
-			printw(text[i + toprend].c_str());
+			printw(buffers[cb].content[i + buffers[cb].toprend].c_str());
 		}
 	}
 
 	// Move the cursor to the correct position
-	move(y - toprend, x);
+	move(buffers[cb].y - buffers[cb].toprend, buffers[cb].x);
 }
+//}}}
 
-// Save the current text to a file
-void saveF(std::string file) {
-	std::ofstream ofs(file);
-	if (!ofs) {
-		// Handle error
-		move(h - 1, 0);
-		printw("Error saving file: %s", file.c_str());
-		refresh();
-		return;
-	}
-	for (const auto& line : text) {
-		ofs << line << "\n";
+// Save the current buffer to a file
+//{{{
+inline void saveF(std::string file) {
+	std::ofstream ofs(buffers[cb].path);
+	for (const auto& line : buffers[cb].content) {
+		ofs << line << '\n';
 	}
 	ofs.close();
 }
+//}}}
 
-// Load text from a file
-void loadF(std::string file) {
+// Load text from a file to the current buffer
+//{{{
+inline void loadF(std::string file) {
 	std::ifstream ifs(file);
+	std::string wd = std::string(getcwd(nullptr, 0));
+	buffers[cb].path = wd + "/" + file;
 	if (!ifs) {
-		// Handle error
+		buffers.push_back({file, {""}});
+		cb = buffers.size() - 1;
 		move(h - 1, 0);
-		printw("Error loading file: %s", file.c_str());
-		refresh();
+		clearline();
+		move(h - 1, 0);
+		printw(file.c_str());
+		printw(" [new]");
 		return;
 	}
-	text.clear(); // Clear current text
+	
+	buffers[cb].content.clear();
 	std::string line;
+	
 	while (std::getline(ifs, line)) {
-		text.push_back(line);
+		std::string newLine;
+		for (char ch : line) {
+			if (ch == '\t') {
+				newLine.append(TAB_SIZE, ' ');
+			}
+			else {
+				newLine.push_back(ch);
+			}
+		}
+		buffers[cb].content.push_back(newLine);
 	}
+	
 	ifs.close();
-	y = 0; // Reset cursor position
-	x = 0;
+	buffers[cb].y = 0;
+	buffers[cb].x = 0;
+	buffers[cb].toprend = 0;
+	move(h - 1, 0);
+	clearline();
+	move(h - 1, 0);
+	printw(file.c_str());
 }
+//}}}
+
+// INSERT
+//{{{
+inline void insert() {
+	move(h - 1, 0);
+	clearline();
+	move(h - 1, 0);
+	printw("-- INSERT --");
+	scrrend();
+	while (1) {
+		c = getch();
+		// New line
+		if (c == '\n') {
+			if (buffers[cb].x == buffers[cb].content[buffers[cb].y].size()) {
+				buffers[cb].content.insert(buffers[cb].content.begin() + buffers[cb].y + 1, "");
+			}
+			else {
+				std::string s = buffers[cb].content[buffers[cb].y].substr(buffers[cb].x);
+				buffers[cb].content[buffers[cb].y].erase(buffers[cb].x);
+				buffers[cb].content.insert(buffers[cb].content.begin() + buffers[cb].y + 1, s);
+			}
+			buffers[cb].y++;
+			buffers[cb].x = 0; // Reset x to the beginning of the new line
+		}
+		// Backspace
+		else if (c == KEY_BACKSPACE) {
+			if (buffers[cb].x > 0) {
+				buffers[cb].x--;
+				buffers[cb].content[buffers[cb].y].erase(buffers[cb].x, 1);
+			}
+		}
+		// Printable characters
+		else if (31 < c && c < 127) {
+			if (buffers[cb].x < buffers[cb].content[buffers[cb].y].size()) {
+				buffers[cb].content[buffers[cb].y].insert(buffers[cb].x, 1, c);
+			}
+			else {
+				buffers[cb].content[buffers[cb].y].push_back(c);
+			}
+			buffers[cb].x++;
+		}
+		// Handle tab key
+		else if (c == '\t') {
+			for (int i = 0; i < TAB_SIZE; ++i) {
+				if (buffers[cb].x < buffers[cb].content[buffers[cb].y].size()) {
+					buffers[cb].content[buffers[cb].y].insert(buffers[cb].x, 1, ' ');
+				}
+				else {
+					buffers[cb].content[buffers[cb].y].push_back(' ');
+				}
+				buffers[cb].x++;
+			}
+		}
+		else if (c == 27 || c == 0) {
+			break;
+		}
+		scrrend();
+	}
+	move(h - 1, 0);
+	clearline();
+}
+//}}}
+
+// HANDLE_COMMAND
+//{{{
+inline void handle_command(std::string command) {
+	if (command == "q") {
+		endwin();
+		exit(0);
+	}
+	else if (command == "w") {
+		saveF(buffers[cb].name);
+	}
+	else if (command[0] == 'c' && command[1] == 'd' && command[2] == ' ') {
+		chdir(command.substr(3).c_str());
+	}
+	else if (command == "pwd") {
+		move(h - 1, 0);
+		clearline();
+		move(h - 1, 0);
+		char* pwd = new char[256];
+		getcwd(pwd, 256);
+		printw(pwd);
+	}
+	else if (command == "buffers") {
+		move(h - 1, 0);
+		clearline();
+		move(h - 1, 0);
+		for (auto& buf : buffers) {
+			std::string title = buf.name + ' ';
+			printw(title.c_str());
+		}
+	}
+	else if (command[0] == 'e' && command[1] == ' ') {
+		if (command.size() > 2) {
+			loadF(command.substr(2));
+		}
+	}
+	else if (command[0] == 'b' && command[1] == ' ') {
+		std::string newbuf = command.substr(2);
+		for (const auto& buf : buffers) {
+			if (buf.name == newbuf) {
+				cb = &buf - &buffers[0];
+				return;
+			}
+		}
+		buffers.push_back(buffer(newbuf, {""}));
+		cb = buffers.size() - 1;
+	}
+	else if (command == "cb") {
+		move(h - 1, 0);
+		clearline();
+		move(h - 1, 0);
+		printw("%s %u", buffers[cb].name.c_str(), cb);
+	}
+	else if (command[0] == 'b' && command[1] == 'd' && command[2] == ' ') {
+		std::string delbuf = command.substr(3);
+	}
+	else if (!command.empty()) {
+		move(h - 1, 0);
+		clearline();
+		move(h - 1, 0);
+		printw("Command not found");
+	}
+}
+//}}}
+
+// COMMAND
+//{{{
+inline void command() {
+	std::string command = "";
+	move(h - 1, 0);
+	clearline();
+	move(h - 1, 0);
+	addch(':');
+	unsigned short cx = 1;
+	while (1) {
+		c = getch();
+		if (c == '\n') {
+			move(buffers[cb].y - buffers[cb].toprend, buffers[cb].x);
+			break;
+		}
+		else if (c == 27) { // Exit command mode
+			move(h - 1, 0);
+			clearline();
+			move(buffers[cb].y - buffers[cb].toprend, buffers[cb].x);
+			command.clear();
+			break;
+		}
+		else if (c == KEY_BACKSPACE) { // Backspace
+			if (cx > 1) {
+				move(h - 1, --cx);
+				addch(' ');
+				move(h - 1, cx);
+				command.pop_back();
+			}
+			else {
+				move(h - 1, 0);
+				clearline();
+				break;
+			}
+		}
+		else if (31 < c && c < 127) { // Printable characters
+			command.push_back(c);
+			if (cx < w) {
+				addch(c);
+			}
+			cx++;
+		}
+	}
+	handle_command(command);
+}
+//}}}
+
+// CURSOR MOVEMENT
+//{{{
+// left
+inline void moveLeft() {
+	if (buffers[cb].x > 0) {
+		buffers[cb].x--;
+	}
+}
+
+// down
+inline void moveDown() {
+	if (buffers[cb].y < buffers[cb].content.size() - 1) {
+		buffers[cb].y++;
+		if (buffers[cb].x > buffers[cb].content[buffers[cb].y].size()) {
+			buffers[cb].x = buffers[cb].content[buffers[cb].y].size(); // Adjust x if it exceeds the new line length
+		}
+	}
+}
+
+// up
+inline void moveUp() {
+	if (buffers[cb].y > 0) {
+		buffers[cb].y--;
+		if (buffers[cb].x > buffers[cb].content[buffers[cb].y].size()) {
+			buffers[cb].x = buffers[cb].content[buffers[cb].y].size(); // Adjust x if it exceeds the new line length
+		}
+	}
+}
+
+// right
+inline void moveRight() {
+	if (buffers[cb].x < buffers[cb].content[buffers[cb].y].size()) {
+		buffers[cb].x++;
+	}
+}
+
+//}}}
+
+// INSERT
+//{{{
+inline void insertBefore() {
+	if (buffers[cb].x > 0) {
+		buffers[cb].x--;
+		insert();
+	}
+	else {
+		insert();
+	}
+}
+
+inline void insertAfter() {
+	if (buffers[cb].x < buffers[cb].content[buffers[cb].y].size() - 2 && buffers[cb].content[buffers[cb].y].size() != 0) {
+		buffers[cb].x++;
+		insert();
+		buffers[cb].x--;
+	}
+	else {
+		insert();
+	}
+}
+//}}}
+
